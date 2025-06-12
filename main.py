@@ -9,10 +9,14 @@ def main():
     api_key = os.environ.get("GEMINI_API_KEY")
     client = genai.Client(api_key=api_key)
 
-    prompt = input("Please enter a prompt: ")
+    prompt = sys.argv
+
+    if len(prompt) < 2:
+        raise Exception("Please provide a prompt")
+        #sys.exit()
 
     response = client.models.generate_content(
-        model='gemini-2.0-flash-001', contents=prompt
+        model = 'gemini-2.0-flash-001', contents=prompt
     )
 
     prompt_tokens = response.usage_metadata.prompt_token_count
