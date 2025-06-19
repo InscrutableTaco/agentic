@@ -3,83 +3,11 @@ import os
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
+
 from prompts import system_prompt
+from call_function import call_function, available_functions
+from config import MAX_ITERS
 
-schema_get_files_info = types.FunctionDeclaration(
-    name="get_files_info",
-    description="Lists files in the specified directory along with their sizes, constrained to the working directory.",
-    parameters=types.Schema(
-        type=types.Type.OBJECT,
-        properties={
-            "directory": types.Schema(
-                type=types.Type.STRING,
-                description="The directory to list files from, relative to the working directory. If not provided, lists files in the working directory itself.",
-            ),
-        },
-    ),
-)
-
-schema_get_file_content = types.FunctionDeclaration(
-    name="get_file_content",
-    description="Gets the content from the specified file, constrained to the working directory.",
-    parameters=types.Schema(
-        type=types.Type.OBJECT,
-        properties={
-            "file_path": types.Schema(
-                type=types.Type.STRING,
-                description="The path of the file to read, relative to the working directory.",
-            ),
-        },
-    ),
-)
-
-schema_run_python_file = types.FunctionDeclaration(
-    name="run_python_file",
-    description="Runs the specified python file, constrained to the working directory.",
-    parameters=types.Schema(
-        type=types.Type.OBJECT,
-        properties={
-            "file_path": types.Schema(
-                type=types.Type.STRING,
-                description="The path of the file to run, relative to the working directory.",
-            ),
-            "args": types.Schema(
-                type=types.Type.ARRAY,
-                items=types.Schema(
-                    type=types.Type.STRING),
-                description="Optional command-line arguments to pass to the Python script. defaults to no additional arguments",
-            ),
-        },
-    ),
-)
-
-schema_write_file = types.FunctionDeclaration(
-    name="write_file",
-    description="Writes a file to the specified path, constrained to the working directory.",
-    parameters=types.Schema(
-        type=types.Type.OBJECT,
-        properties={
-            "file_path": types.Schema(
-                type=types.Type.STRING,
-                description="The path of the file to write, relative to the working directory.",
-            ),
-            "content": types.Schema(
-                type=types.Type.STRING,
-                description="The content to write to the file",
-            ),
-        },
-    ),
-)
-
-available_functions = types.Tool(
-    function_declarations=[
-        schema_get_files_info,
-        schema_get_file_content,
-        schema_run_python_file,
-        schema_write_file,
-
-    ]
-)
 
 def main():
     load_dotenv()
@@ -105,7 +33,21 @@ def main():
         types.Content(role="user", parts=[types.Part(text=user_prompt)]),
     ]
 
-    generate_content(client, messages, verbose)
+    iters = 0
+    while True:
+        iters += 1
+        if iters > MAX_ITERS:
+            print(f"Maximum iterations ({MAX_ITERS}) reached.")
+            sys.exit(1)
+
+        try:
+            final_response = generate_content(client, messages, verbose)
+            if final_response:
+                print("Final response:")
+                print(final_response)
+                break
+        except Exception as e:
+            print(f"Error in generate_content: {e}")
 
 
 def generate_content(client, messages, verbose):
@@ -114,18 +56,36 @@ def generate_content(client, messages, verbose):
         contents=messages,
         config=types.GenerateContentConfig(
             tools=[available_functions], system_instruction=system_prompt
-),
+        ),
     )
     if verbose:
         print("Prompt tokens:", response.usage_metadata.prompt_token_count)
         print("Response tokens:", response.usage_metadata.candidates_token_count)
-    print("Response:")
 
-    if response.function_calls:
-        for function_call_part in response.function_calls:
-            print(f"Calling function: {function_call_part.name}({function_call_part.args})")
-    else:
-        print(response.text)
+    if response.candidates:
+        for candidate in response.candidates:
+            function_call_content = candidate.content
+            messages.append(function_call_content)
+
+    if not response.function_calls:
+        return response.text
+
+    function_responses = []
+    for function_call_part in response.function_calls:
+        function_call_result = call_function(function_call_part, verbose)
+        if (
+            not function_call_result.parts
+            or not function_call_result.parts[0].function_response
+        ):
+            raise Exception("empty function call result")
+        if verbose:
+            print(f"-> {function_call_result.parts[0].function_response.response}")
+        function_responses.append(function_call_result.parts[0])
+
+    if not function_responses:
+        raise Exception("no function responses generated, exiting.")
+
+    messages.append(types.Content(role="tool", parts=function_responses))
 
 
 if __name__ == "__main__":
